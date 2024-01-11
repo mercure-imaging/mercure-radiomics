@@ -1,0 +1,20 @@
+name: mercure-radiomics
+
+channels:
+- conda-forge
+
+dependencies:
+- python==3.11
+- numpy
+- SimpleITK
+- PyWavelets
+- pykwalify
+- six
+- pydicom
+- pip
+- pip:
+  - numpy
+  - mirp
+  - highdicom
+  - rt-utils
+  - pyradiomics
