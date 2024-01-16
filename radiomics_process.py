@@ -19,6 +19,8 @@ from radiomics import featureextractor
 import numpy as np
 import six
 from mirp import extract_features,extract_mask_labels
+import highdicom as hd
+from pydicom.sr.codedict import codes
 
 
 # Imports for loading DICOMs
@@ -76,6 +78,7 @@ def main(args=sys.argv[1:]):
 
 
     #read modality and move to relevant input directories
+    modality_list =[]
     series = []
     for entry in os.scandir(in_folder):
         if entry.name.endswith(".dcm") and not entry.is_dir():
@@ -93,11 +96,17 @@ def main(args=sys.argv[1:]):
                     sys.exit(1)
 
             modality = ds.Modality
-            if modality=='MR':
+            if modality=='MR' or  modality=='CT':
                 target_path =image_path
+                if modality not in modality_list: modality_list.append(modality)
                 
             if modality=='RTSTRUCT':
                 target_path=mask_path
+                if modality not in modality_list: modality_list.append(modality)
+
+            if modality=='SEG':
+                target_path=mask_path
+                if modality not in modality_list: modality_list.append(modality)
                 
             if (target_path):
                 shutil.move(os.path.join(in_folder, entry.name), target_path)
@@ -112,23 +121,59 @@ def main(args=sys.argv[1:]):
     
     mask_file_in = os.path.join(mask_path, os.listdir(mask_path)[0])
     print(mask_file_in)
-    rtstruct = RTStructBuilder.create_from(
-        dicom_series_path=image_path, 
-        rt_struct_path=mask_file_in
+
+    if 'RTSTRUCT' in modality_list: 
+        rtstruct = RTStructBuilder.create_from(
+            dicom_series_path=image_path, 
+            rt_struct_path=mask_file_in
+            )
+
+        # View all of the ROI names from within the image
+        roi_list = rtstruct.get_roi_names()
+        print(roi_list)
+        selected_roi = roi_list[0]
+
+        # Loading the 3D Mask from within the RT Struct ## need to sort out datatype!!!!!
+        mask_volume = np.array(rtstruct.get_roi_mask_by_name(selected_roi))
+        mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
+
+        dcm_images = [image.pixel_array for image in rtstruct.series_data ]
+        image_volume = np.stack(dcm_images, axis=2)
+    elif 'SEG' in modality_list: 
+        seg = hd.seg.segread(mask_file_in)
+        segment_numbers = seg.get_segment_numbers(
+            segmented_property_type=codes.SCT.Organ
         )
 
-    # View all of the ROI names from within the image
-    roi_list = rtstruct.get_roi_names()
-    print(roi_list)
-    selected_roi = roi_list[0]
+        source_image_uids = []
+        for study_uid, series_uid, sop_uid in seg.get_source_image_uids():
+            print(study_uid, series_uid, sop_uid)
+            source_image_uids.append(sop_uid)
+        # Retrieve a binary segmentation mask for these images for the bone segment
+        mask_volume = seg.get_pixels_by_source_instance(
+                source_sop_instance_uids=source_image_uids,
+                segment_numbers=segment_numbers,
+        )
+        mask_volume =np.squeeze(mask_volume)
+        mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
+        image_series_data=[]
+        for root, _, files in os.walk(image_path):
+            for file in files:
+                try:
+                    ds = pydicom.dcmread(os.path.join(root, file))
+                    if hasattr(ds, "pixel_array"):
+                        image_series_data.append(ds)
+                except Exception:
+                    # Not a valid DICOM file
+                    continue
+        dcm_images = [image.pixel_array for image in image_series_data ]
+        image_volume = np.stack(dcm_images, axis=0)
+            
 
-    # Loading the 3D Mask from within the RT Struct ## need to sort out datatype!!!!!
-    mask_volume = np.array(rtstruct.get_roi_mask_by_name(selected_roi))
-    mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
+            
     
     
-    dcm_images = [image.pixel_array for image in rtstruct.series_data ]
-    image_volume = np.stack(dcm_images, axis=2)
+    
 
     image_array = sitk.GetImageFromArray(image_volume.astype(np.float32))
 
@@ -144,7 +189,7 @@ def main(args=sys.argv[1:]):
     for key, value in six.iteritems(result):
         print('\t', key, ':', value)
 
-
+    #MIRP currently working with RTSTRUCT - could convert SEG to RTSTRUCT?
     mirp_feature_data = extract_features(
         image=image_path,
         mask=mask_path,
@@ -152,6 +197,7 @@ def main(args=sys.argv[1:]):
         base_discretisation_method="fixed_bin_number",
         base_discretisation_n_bins=32
     )
+        
 
     print(mirp_feature_data)
 
