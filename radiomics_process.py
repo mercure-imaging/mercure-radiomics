@@ -17,6 +17,7 @@ import SimpleITK as sitk
 import radiomics
 from radiomics import featureextractor
 import numpy as np
+import pandas as pd
 import six
 from mirp import extract_features,extract_mask_labels
 import highdicom as hd
@@ -109,7 +110,7 @@ def main(args=sys.argv[1:]):
                 if modality not in modality_list: modality_list.append(modality)
                 
             if (target_path):
-                shutil.move(os.path.join(in_folder, entry.name), target_path)
+                shutil.copy(os.path.join(in_folder, entry.name), target_path)
             else:
                 print("Error: Error copying files.")
                 sys.exit(1)
@@ -190,16 +191,58 @@ def main(args=sys.argv[1:]):
         print('\t', key, ':', value)
 
     #MIRP currently working with RTSTRUCT - could convert SEG to RTSTRUCT?
+    mirp_mask_path=mask_path
+    if 'SEG' in modality_list:
+        rt_struct_output_filename = 'output-rt-struct_vols.dcm'
+        rt_struct_output_path = os.path.join(current_dir, 'rt_struct_output')
+        if not os.path.exists(rt_struct_output_path):
+            os.makedirs(rt_struct_output_path) 
+        #create new RT Struct - requires original DICOM
+        rtstruct = RTStructBuilder.create_new(dicom_series_path=image_path)
+        rtstruct.add_roi(
+                mask=np.moveaxis((mask_volume>0),0,2),
+                name='test_organ'
+            )
+        # roi_num = np.max(mask_volume)
+        # for roi in range(1,roi_num+1):
+        #     # add segmentation to RT Struct
+        #     rtstruct.add_roi(
+        #         mask=(mask_volume==roi),
+        #         name='test organ'
+        #     )
+
+        rtstruct.save(os.path.join(rt_struct_output_path, rt_struct_output_filename))
+        mirp_mask_path=rt_struct_output_path
+        selected_roi='test_organ'
+
     mirp_feature_data = extract_features(
         image=image_path,
-        mask=mask_path,
+        mask=mirp_mask_path,
         roi_name=[selected_roi],
         base_discretisation_method="fixed_bin_number",
         base_discretisation_n_bins=32
     )
-        
 
-    print(mirp_feature_data)
+    print(type(mirp_feature_data[0]))   
+    #convert to dictionary and print
+    mirp_dict = mirp_feature_data[0].loc[0].to_dict()
+    #print(mirp_dict)
+    for key, value in six.iteritems(mirp_dict):
+        print('\t', key, ':', value)
+
+    #clean up
+    
+    if os.path.exists(mask_path):
+        shutil.rmtree(mask_path)
+        print('mask path deleted.')
+    
+    if os.path.exists(image_path):
+        shutil.rmtree(image_path)
+        print('image path deleted.')
+    
+    if os.path.exists(rt_struct_output_path):
+        shutil.rmtree(rt_struct_output_path)
+        print('rtstruct path deleted.')
 
 if __name__ == "__main__":
     main()

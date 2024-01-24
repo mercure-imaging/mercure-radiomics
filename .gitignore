@@ -136,3 +136,4 @@ out/
 *.ipynb
 image/
 mask/
+rt_struct_output/
