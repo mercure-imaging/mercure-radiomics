@@ -198,7 +198,7 @@ def main(args=sys.argv[1:]):
             if Path(settings_path).exists():
                 settings_file = os.path.join(settings_path,"settings.json")
             with open(settings_file, "w") as write_file:
-                json.dump(parameter_json, write_file, indent=3)
+                json.dump(parameter_json, write_file, indent=4)
             p = Path(settings_file)
             p.chmod(p.stat().st_mode | stat.S_IROTH | stat.S_IXOTH | stat.S_IWOTH)
             
@@ -214,8 +214,17 @@ def main(args=sys.argv[1:]):
         print('Result type:', type(result))  # result is returned in a Python ordered dictionary)
         print('')
         print('Calculated features')
+        
+        #display results and convert arrays to results for json serialization
+        r_dict = {}
         for key, value in six.iteritems(result):
             print('\t', key, ':', value)
+            if isinstance(value, np.ndarray):
+                value = value.tolist()
+            r_dict[key] =value
+        
+        write_result_json(out_folder, r_dict)
+
     elif selected_processor=='mirp':
         #MIRP currently working with RTSTRUCT - could convert SEG to RTSTRUCT?
         mirp_mask_path=mask_path
@@ -254,6 +263,7 @@ def main(args=sys.argv[1:]):
         #print(mirp_dict)
         for key, value in six.iteritems(mirp_dict):
             print('\t', key, ':', value)
+        write_result_json(out_folder, mirp_dict)
 
     #clean up
     
@@ -272,6 +282,16 @@ def main(args=sys.argv[1:]):
     if os.path.exists(settings_path):
         shutil.rmtree(settings_path)
         print('settings path deleted.')
+
+
+def write_result_json(output_dir, results_dict):
+    if Path(output_dir).exists():
+        results_file = os.path.join(output_dir,"results.json")
+        with open(results_file, "w") as write_file:
+            json.dump(results_dict, write_file, indent=4)
+        p = Path(results_file)
+        p.chmod(p.stat().st_mode | stat.S_IROTH | stat.S_IXOTH | stat.S_IWOTH)
+
 
 if __name__ == "__main__":
     main()
