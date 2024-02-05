@@ -11,6 +11,8 @@ import sys
 import json
 import stat
 import shutil
+import glob
+import csv
 import subprocess
 from pathlib import Path
 from rt_utils import RTStructBuilder
@@ -23,6 +25,13 @@ import six
 from mirp import extract_features,extract_mask_labels
 import highdicom as hd
 from pydicom.sr.codedict import codes
+from rt_utils import ds_helper, image_helper
+
+from pydicom.filereader import dcmread
+from pydicom.sr.codedict import codes
+from pydicom.uid import generate_uid
+from highdicom.sr.content import FindingSite
+from highdicom.sr.templates import Measurement, TrackingIdentifier
 
 
 # Imports for loading DICOMs
@@ -89,6 +98,8 @@ def main(args=sys.argv[1:]):
     #read modality and move to relevant input directories
     modality_list =[]
     series = []
+    first_image_path=''
+    image_ds_list=[]
     for entry in os.scandir(in_folder):
         if entry.name.endswith(".dcm") and not entry.is_dir():
             
@@ -108,6 +119,8 @@ def main(args=sys.argv[1:]):
             if modality=='MR' or  modality=='CT':
                 target_path =image_path
                 if modality not in modality_list: modality_list.append(modality)
+                if first_image_path=='':first_image_path=dcm_file_in
+                image_ds_list.append(ds)
                 
             if modality=='RTSTRUCT':
                 target_path=mask_path
@@ -116,7 +129,7 @@ def main(args=sys.argv[1:]):
             if modality=='SEG':
                 target_path=mask_path
                 if modality not in modality_list: modality_list.append(modality)
-                
+                #image_ds_list.append(ds)
             if (target_path):
                 shutil.copy(os.path.join(in_folder, entry.name), target_path)
             else:
@@ -148,6 +161,7 @@ def main(args=sys.argv[1:]):
         else:
             print('ROI not found:', roi_settings[0])
 
+        
         # Loading the 3D Mask from within the RT Struct ## need to sort out datatype!!!!!
         mask_volume = np.array(rtstruct.get_roi_mask_by_name(selected_roi))
         mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
@@ -161,7 +175,7 @@ def main(args=sys.argv[1:]):
         #    )
         segment_numbers=roi_settings
         print(segment_numbers)
-        
+        print(seg.number_of_segments )
         if  seg.number_of_segments > 0 :
             source_image_uids = []
             for study_uid, series_uid, sop_uid in seg.get_source_image_uids():
@@ -185,6 +199,7 @@ def main(args=sys.argv[1:]):
                         # Not a valid DICOM file
                         continue
             dcm_images = [image.pixel_array for image in image_series_data ]
+            print (len(dcm_images))
             image_volume = np.stack(dcm_images, axis=0)
         else:
             print('error')
@@ -223,7 +238,7 @@ def main(args=sys.argv[1:]):
                 value = value.tolist()
             r_dict[key] =value
         
-        write_result_json(out_folder, r_dict)
+        json_results= write_result_json(out_folder, r_dict)
 
     elif selected_processor=='mirp':
         #MIRP currently working with RTSTRUCT - could convert SEG to RTSTRUCT?
@@ -263,9 +278,11 @@ def main(args=sys.argv[1:]):
         #print(mirp_dict)
         for key, value in six.iteritems(mirp_dict):
             print('\t', key, ':', value)
-        write_result_json(out_folder, mirp_dict)
+        json_results = write_result_json(out_folder, mirp_dict)
 
     #clean up
+    
+    seg_sr_writer(mask_volume, image_path, out_folder, json_results)
     
     if os.path.exists(mask_path):
         shutil.rmtree(mask_path)
@@ -288,9 +305,177 @@ def write_result_json(output_dir, results_dict):
     if Path(output_dir).exists():
         results_file = os.path.join(output_dir,"results.json")
         with open(results_file, "w") as write_file:
-            json.dump(results_dict, write_file, indent=4)
+            json_string = json.dumps(results_dict, indent=4)
+            write_file.write(json_string)
         p = Path(results_file)
         p.chmod(p.stat().st_mode | stat.S_IROTH | stat.S_IXOTH | stat.S_IWOTH)
+
+        # Write the dictionary to a CSV file
+        results_csv = os.path.join(output_dir,'radiomics_results.csv')
+        with open(results_csv, 'w', newline='') as file:
+            writer = csv.DictWriter(file, fieldnames=results_dict.keys())
+            writer.writeheader()
+            writer.writerow(results_dict)
+    
+    return json_string
+
+def seg_sr_writer(mask, series_dir, write_dir, json_results):
+        series_dir = Path(series_dir)
+
+        image_files = sorted(series_dir.glob("*.dcm"), reverse=True)
+
+        # Read CT Image data sets from PS3.10 files on disk
+        image_datasets = [pydicom.dcmread(str(f)) for f in image_files]
+        print('got past dcm_read')
+        # Read CT Image data sets from PS3.10 files on disk
+        
+        
+        # Describe the algorithm that created the segmentation
+        algorithm_identification = hd.AlgorithmIdentificationSequence(
+            name='mercure-radiomics',
+            version='v1.0',
+            family=codes.DCM.ArtificialIntelligence
+        )
+        
+        seg_name='radiomics'
+        seg_series_desc='mercure-radiomics_ROI_seg'
+        sct_type = codes.SCT.Organ
+        # Describe the segment
+        description_segment_1 = hd.seg.SegmentDescription(
+            segment_number=1,
+            segment_label=seg_name,
+            segmented_property_category=codes.SCT.Organ,
+            segmented_property_type=sct_type,
+            algorithm_type=hd.seg.SegmentAlgorithmTypeValues.AUTOMATIC,
+            algorithm_identification=algorithm_identification,
+            tracking_uid=hd.UID(),
+            tracking_id='RadiomicsROI'
+        )
+
+        # Create the Segmentation instance
+        mask=np.moveaxis(mask,2,0)
+        print(np.shape(mask), len(image_datasets))
+        seg_dataset = hd.seg.Segmentation(
+            source_images=image_datasets,
+            pixel_array=mask,
+            segmentation_type=hd.seg.SegmentationTypeValues.BINARY,
+            segment_descriptions=[description_segment_1],
+            series_instance_uid=hd.UID(),
+            series_number=1001,
+            sop_instance_uid=hd.UID(),
+            instance_number=1,
+            manufacturer='CBI',
+            manufacturer_model_name='Mercure',
+            software_versions='v1',
+            device_serial_number='Mercure',
+            series_description=seg_series_desc,
+        )
+        
+        #print(seg_dataset)
+        seg_file_path = os.path.join(write_dir, "seg_"+seg_name+".dcm")
+        seg_dataset.save_as(seg_file_path)
+
+
+        #write structured report:
+
+        #TODO write IBSI measurment definitions and loop:
+        # A measurement using an IBSI code (not in pydicom)
+        # histogram_intensity_code = hd.sr.CodedConcept(
+        #     value="X6K6",
+        #     meaning="Intensity Histogram Mean",
+        #     scheme_designator="IBSI",
+        # )
+        # hist_measurement = hd.sr.Measurement(
+        #     name=histogram_intensity_code,
+        #     value=-119.0738525390625,
+        #     unit=codes.UCUM.HounsfieldUnit,
+        # )
+
+        # A segmentation dataset, assumed to contain a segmentation of the source
+        # image above
+        seg = dcmread(seg_file_path)
+
+        # Information about the observer
+        observer_person_context = hd.sr.ObserverContext(
+            observer_type=codes.DCM.Person,
+            observer_identifying_attributes=hd.sr.PersonObserverIdentifyingAttributes(
+                name='Doe^John'
+            )
+        )
+        observer_device_context = hd.sr.ObserverContext(
+            observer_type=codes.DCM.Device,
+            observer_identifying_attributes=hd.sr.DeviceObserverIdentifyingAttributes(
+                uid=hd.UID(),
+            )
+        )
+
+
+        observation_context = hd.sr.ObservationContext(
+            observer_person_context=observer_person_context,
+            observer_device_context=observer_device_context,
+        )
+
+        
+        
+        # A tracking identifier for this measurement group
+        tracking_id = hd.sr.TrackingIdentifier(
+        identifier='Region3D0001',
+        uid=hd.UID(),
+        )
+
+        # # Define the image region using a specific segment from the segmentation
+        ref_segment = hd.sr.ReferencedSegment.from_segmentation(
+        segmentation=seg,
+        segment_number=1,
+        )
+
+        # # Construct the measurement group
+        group = hd.sr.VolumetricROIMeasurementsAndQualitativeEvaluations(
+        referenced_segment=ref_segment,
+        tracking_identifier=tracking_id,
+        #measurements=[...],
+        #qualitative_evaluations=[...],
+        )
+        
+        radiomics_text_concept = hd.sr.CodedConcept(
+             value="X99X",
+             meaning="Radiomics results output",
+             scheme_designator="IBSI",
+        )
+
+        radiomics_results_text = hd.sr.TextContentItem(
+            name=radiomics_text_concept,
+            value=json_results,
+            relationship_type=hd.sr.RelationshipTypeValues.HAS_OBS_CONTEXT,
+        )
+        
+        observation_context.append(radiomics_results_text)
+
+        measurement_report = hd.sr.MeasurementReport(
+          observation_context=observation_context,  # from above
+          procedure_reported=codes.LN.CTUnspecifiedBodyRegion,
+          imaging_measurements=[group],
+          title=codes.DCM.ImagingMeasurementReport,
+        )
+
+        sr_series_desc='mercure-radiomics_ROI_SR'
+        image_datasets.append(seg)
+        # Create the Structured Report instance
+        sr_dataset = hd.sr.Comprehensive3DSR(
+            evidence=image_datasets,  # all datasets referenced in the report
+            content=measurement_report,
+            series_number=2001,
+            series_instance_uid=hd.UID(),
+            sop_instance_uid=hd.UID(),
+            instance_number=1,
+            series_description=sr_series_desc,
+            manufacturer='Manufacturer'
+        )
+        
+
+        #add radiomics from result.json
+        sr_file_path = os.path.join(write_dir, "sr_"+seg_name+".dcm")
+        sr_dataset.save_as(sr_file_path)
 
 
 if __name__ == "__main__":
