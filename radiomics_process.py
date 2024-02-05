@@ -280,10 +280,13 @@ def main(args=sys.argv[1:]):
             print('\t', key, ':', value)
         json_results = write_result_json(out_folder, mirp_dict)
 
-    #clean up
     
+    # generate SR - reshape array if RT struct   
+    if 'RTSTRUCT' in modality_list:
+        mask_volume=np.flip(np.moveaxis(mask_volume,2,0),0)
     seg_sr_writer(mask_volume, image_path, out_folder, json_results)
     
+    #clean up
     if os.path.exists(mask_path):
         shutil.rmtree(mask_path)
         print('mask path deleted.')
@@ -353,7 +356,7 @@ def seg_sr_writer(mask, series_dir, write_dir, json_results):
         )
 
         # Create the Segmentation instance
-        mask=np.moveaxis(mask,2,0)
+        
         print(np.shape(mask), len(image_datasets))
         seg_dataset = hd.seg.Segmentation(
             source_images=image_datasets,
