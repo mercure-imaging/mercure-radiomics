@@ -70,8 +70,8 @@ def main(args=sys.argv[1:]):
         sys.exit(1)
 
     # # Create default values for all module settings
-    #settings = {"rois": ["all"], "processor": "pyradiomics" , "processor_settings":"default"}
-    settings ={}
+    settings = {"rois": [1], "processor": "pyradiomics" , "processor_settings":"default"}
+    
     # # Overwrite default values with settings from the task file (if present)
     if task.get("process", ""):
          settings.update(task["process"].get("settings", {}))

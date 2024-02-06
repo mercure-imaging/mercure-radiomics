@@ -8,10 +8,13 @@ ADD radiomics_process.py ./
 ADD docker-entrypoint.sh ./
 RUN chmod 777 ./docker-entrypoint.sh
 
-RUN conda create -n env python>=3.11
+RUN conda create -n env python==3.11
 RUN echo "source activate env" > ~/.bashrc
 ENV PATH /opt/conda/envs/env/bin:$PATH
 RUN chmod -R 777 /opt/conda/envs
+RUN apt-get update && apt-get install --no-install-recommends --no-install-suggests -y git build-essential cmake pigz
+RUN apt-get update && apt-get install --no-install-recommends --no-install-suggests -y libsm6 libxrender-dev libxext6 ffmpeg
+
 ADD environment.yml ./
 RUN conda env create -f ./environment.yml
 
