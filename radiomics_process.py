@@ -133,8 +133,8 @@ def main(args=sys.argv[1:]):
             if (target_path):
                 shutil.copy(os.path.join(in_folder, entry.name), target_path)
             else:
-                print("Error: Error copying files.")
-                sys.exit(1)
+                print("Error: Error copying files for modality:", modality)
+                #sys.exit(1)
     
     selected_processor=settings["processor"]
     processor_settings=settings["processor_settings"]
