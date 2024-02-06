@@ -61,7 +61,7 @@ def main(args=sys.argv[1:]):
         print("IN/OUT paths do not exist")
         sys.exit(1)
 
-    # # Load the task.json file, which contains the settings for the processing module
+    # Load the task.json file, which contains the settings for the processing module
     try:
         with open(Path(in_folder) / "task.json", "r") as json_file:
             task = json.load(json_file)
@@ -70,9 +70,9 @@ def main(args=sys.argv[1:]):
         sys.exit(1)
 
     # # Create default values for all module settings
-    settings = {"rois": [1], "processor": "pyradiomics" , "processor_settings":"default"}
+    settings = {"rois": [1], "processor": "pyradiomics" , "processor_settings":"default", "processing_parameters":{}}
     
-    # # Overwrite default values with settings from the task file (if present)
+    # Overwrite default values with settings from the task file (if present)
     if task.get("process", ""):
          settings.update(task["process"].get("settings", {}))
 
