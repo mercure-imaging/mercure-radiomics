@@ -112,8 +112,8 @@ def main(args=sys.argv[1:]):
             if series_number not in series:
                 series.append(series_number)
                 if len(series) >2:
-                    print("Error: More than two series in input directory.")
-                    sys.exit(1)
+                    print("Info: More than two series in input directory.")
+                    #sys.exit(1)
 
             modality = ds.Modality
             if modality=='MR' or  modality=='CT':
