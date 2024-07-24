@@ -21,6 +21,7 @@ import radiomics
 from radiomics import featureextractor
 import numpy as np
 import pandas as pd
+import json
 import six
 from mirp import extract_features,extract_mask_labels
 import highdicom as hd
@@ -61,24 +62,63 @@ def main(args=sys.argv[1:]):
         print("IN/OUT paths do not exist")
         sys.exit(1)
 
-    # Load the task.json file, which contains the settings for the processing module
+    current_dir = os.getcwd()
+
+    # Get settings for extractor
+    default_settings = {"rois": ["ALL"], "processor": "pyradiomics" , "processor_settings":"default", "processing_parameters":{}}
+    settings = get_settings(in_folder, default_settings)
+    
+    roi_settings=settings["rois"]
+    
+    settings_path = os.path.join(current_dir, 'settings')
+    if not os.path.exists(settings_path):
+        os.makedirs(settings_path) 
+    
+
+    
+    # filter image and mask
+    [mask_path, image_path, rt_struct_output_path, modality_list] = filter_dicoms(in_folder,current_dir)
+   
+    
+    mask_file_in = os.path.join(mask_path, os.listdir(mask_path)[0])
+    print(mask_file_in)
+
+    
+    [image_volume, mask_volume, selected_roi] = generate_vols(roi_settings, settings, settings_path, image_path, mask_path, mask_file_in, modality_list, out_folder)
+    
+    
+    #clean up
+    if os.path.exists(mask_path):
+        shutil.rmtree(mask_path)
+        print('mask path deleted.')
+    
+    if os.path.exists(image_path):
+        shutil.rmtree(image_path)
+        print('image path deleted.')
+    
+    if os.path.exists(rt_struct_output_path):
+        shutil.rmtree(rt_struct_output_path)
+        print('rtstruct path deleted.')
+    
+    if os.path.exists(settings_path):
+        shutil.rmtree(settings_path)
+        print('settings path deleted.')
+
+def get_settings(input_folder, settings):
+     # Load the task.json file, which contains the settings for the processing module
     try:
-        with open(Path(in_folder) / "task.json", "r") as json_file:
+        with open(Path(input_folder) / "task.json", "r") as json_file:
             task = json.load(json_file)
     except Exception:
         print("Error: Task file task.json not found")
         sys.exit(1)
-
-    # # Create default values for all module settings
-    settings = {"rois": [1], "processor": "pyradiomics" , "processor_settings":"default", "processing_parameters":{}}
     
     # Overwrite default values with settings from the task file (if present)
     if task.get("process", ""):
          settings.update(task["process"].get("settings", {}))
+    return settings
 
-    
-    # filter image and mask
-    current_dir = os.getcwd()
+def filter_dicoms(in_folder, current_dir):
     mask_path = os.path.join(current_dir, 'mask')
     if not os.path.exists(mask_path):
         os.makedirs(mask_path)
@@ -90,10 +130,6 @@ def main(args=sys.argv[1:]):
     rt_struct_output_path = os.path.join(current_dir, 'rt_struct_output')
     if not os.path.exists(rt_struct_output_path):
         os.makedirs(rt_struct_output_path)
-
-    settings_path = os.path.join(current_dir, 'settings')
-    if not os.path.exists(settings_path):
-        os.makedirs(settings_path) 
 
     #read modality and move to relevant input directories
     modality_list =[]
@@ -135,16 +171,9 @@ def main(args=sys.argv[1:]):
             else:
                 print("Error: Error copying files for modality:", modality)
                 #sys.exit(1)
-    
-    selected_processor=settings["processor"]
-    processor_settings=settings["processor_settings"]
-    roi_settings=settings["rois"]
-    parameter_json=settings["processing_parameters"]
-    # series_suffix=settings["series_suffix"]
-    # Load existing RT Struct. Requires the series path and existing RT Struct path
-    
-    mask_file_in = os.path.join(mask_path, os.listdir(mask_path)[0])
-    print(mask_file_in)
+    return mask_path, image_path, rt_struct_output_path, modality_list
+
+def generate_vols(roi_settings, settings, settings_path, image_path, mask_path, mask_file_in, modality_list, out_folder):
 
     if 'RTSTRUCT' in modality_list: 
         rtstruct = RTStructBuilder.create_from(
@@ -155,19 +184,45 @@ def main(args=sys.argv[1:]):
         # View all of the ROI names from within the image
         roi_list = rtstruct.get_roi_names()
         print(roi_list)
-        if roi_settings[0] in roi_list:
-            selected_roi = roi_settings[0]
+        if roi_settings[0]!='ALL':
+            roi_list = [item for item in roi_list if item in roi_settings]
+        print(roi_list)
+        output_df=pd.DataFrame()
+        for selected_roi in roi_list:
+            #selected_roi= roi_settings[0]
             print('ROI found, extracting features for ', selected_roi)
-        else:
-            print('ROI not found:', roi_settings[0])
+            # Loading the 3D Mask from within the RT Struct ## need to sort out datatype!!!!!
+            mask_volume = np.array(rtstruct.get_roi_mask_by_name(selected_roi))
+            #mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
+
+            dcm_images = [image.pixel_array for image in rtstruct.series_data ]
+            image_volume = np.stack(dcm_images, axis=2)
+
+            results_dict=extract_radiomic_features(selected_roi,settings, settings_path, image_volume, mask_volume, mask_path,image_path,modality_list, out_folder)
+            
+            # # Initialize out_dict with empty lists
+            # out_dict = {key: [] for key in results_dict}
+            # # Update out_dict (you can call this part multiple times)
+            # for key, value in six.iteritems(results_dict):
+            #     if isinstance(value, list):
+            #         out_dict[key].extend(value)
+            #     else:
+            #         out_dict[key].append(value)
+            
+            results_df = pd.DataFrame.from_dict(results_dict, orient='index').transpose()
+             #add predictions from current checkpoint to previous runs
+            if output_df.empty:
+                output_df = results_df 
+            else:
+                output_df = pd.concat([output_df,results_df ], ignore_index=True)
+            
+            #write structured report
+            json_string = json.dumps(results_dict, indent=4)
+            seg_sr_writer(selected_roi, mask_volume, image_path, out_folder, json_string , modality_list)
+        
 
         
-        # Loading the 3D Mask from within the RT Struct ## need to sort out datatype!!!!!
-        mask_volume = np.array(rtstruct.get_roi_mask_by_name(selected_roi))
-        mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
-
-        dcm_images = [image.pixel_array for image in rtstruct.series_data ]
-        image_volume = np.stack(dcm_images, axis=2)
+        
     elif 'SEG' in modality_list:
         seg = hd.seg.segread(mask_file_in)
         # segment_numbers = seg.get_segment_numbers(
@@ -187,7 +242,7 @@ def main(args=sys.argv[1:]):
                     segment_numbers=segment_numbers,
             )
             mask_volume =np.squeeze(mask_volume)
-            mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
+            #mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
             image_series_data=[]
             for root, _, files in os.walk(image_path):
                 for file in files:
@@ -203,9 +258,16 @@ def main(args=sys.argv[1:]):
             image_volume = np.stack(dcm_images, axis=0)
         else:
             print('error')
+    print(output_df)
+    output_df.to_csv(os.path.join(out_folder, 'results.csv'), index=False)
+    json_file_path = os.path.join(out_folder, 'results.json')
+    output_df.to_json(json_file_path, orient='records', indent=4)
+    return image_volume, mask_volume, selected_roi
 
-    image_array = sitk.GetImageFromArray(image_volume.astype(np.float32))
-
+def extract_radiomic_features(selected_roi, settings, settings_path, image_volume, mask_volume, mask_path,image_path,modality_list, out_folder):
+    selected_processor=settings["processor"]
+    processor_settings=settings["processor_settings"]
+    parameter_json=settings["processing_parameters"]
     if selected_processor=='pyradiomics':
         if processor_settings=='default':
             extractor = featureextractor.RadiomicsFeatureExtractor()
@@ -225,6 +287,8 @@ def main(args=sys.argv[1:]):
         print('Enabled filters:\n\t', extractor.enabledImagetypes)
         print('Enabled features:\n\t', extractor.enabledFeatures)	
         
+        image_array = sitk.GetImageFromArray(image_volume.astype(np.float32))
+        mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
         result = extractor.execute(image_array, mask_array)
         print('Result type:', type(result))  # result is returned in a Python ordered dictionary)
         print('')
@@ -232,13 +296,14 @@ def main(args=sys.argv[1:]):
         
         #display results and convert arrays to results for json serialization
         r_dict = {}
+        r_dict['roi_name'] = selected_roi
         for key, value in six.iteritems(result):
             print('\t', key, ':', value)
             if isinstance(value, np.ndarray):
                 value = value.tolist()
             r_dict[key] =value
-        
-        json_results= write_result_json(out_folder, r_dict)
+       
+        #json_results= write_result_json(out_folder, r_dict)
 
     elif selected_processor=='mirp':
         #MIRP currently working with RTSTRUCT - could convert SEG to RTSTRUCT?
@@ -274,35 +339,12 @@ def main(args=sys.argv[1:]):
 
         print(type(mirp_feature_data[0]))   
         #convert to dictionary and print
-        mirp_dict = mirp_feature_data[0].loc[0].to_dict()
+        r_dict = mirp_feature_data[0].loc[0].to_dict()
         #print(mirp_dict)
-        for key, value in six.iteritems(mirp_dict):
+        for key, value in six.iteritems(r_dict):
             print('\t', key, ':', value)
-        json_results = write_result_json(out_folder, mirp_dict)
-
-    
-    # generate SR - reshape array if RT struct   
-    if 'RTSTRUCT' in modality_list:
-        mask_volume=np.flip(np.moveaxis(mask_volume,2,0),0)
-    seg_sr_writer(mask_volume, image_path, out_folder, json_results)
-    
-    #clean up
-    if os.path.exists(mask_path):
-        shutil.rmtree(mask_path)
-        print('mask path deleted.')
-    
-    if os.path.exists(image_path):
-        shutil.rmtree(image_path)
-        print('image path deleted.')
-    
-    if os.path.exists(rt_struct_output_path):
-        shutil.rmtree(rt_struct_output_path)
-        print('rtstruct path deleted.')
-    
-    if os.path.exists(settings_path):
-        shutil.rmtree(settings_path)
-        print('settings path deleted.')
-
+        #json_results = write_result_json(out_folder, r_dict)
+    return r_dict
 
 def write_result_json(output_dir, results_dict):
     if Path(output_dir).exists():
@@ -322,7 +364,11 @@ def write_result_json(output_dir, results_dict):
     
     return json_string
 
-def seg_sr_writer(mask, series_dir, write_dir, json_results):
+def seg_sr_writer(selected_roi, mask, series_dir, write_dir, json_results, modality_list):
+        # reshape array if RT struct   
+        if 'RTSTRUCT' in modality_list:
+            mask=np.flip(np.moveaxis(mask,2,0),0)
+
         series_dir = Path(series_dir)
 
         image_files = sorted(series_dir.glob("*.dcm"), reverse=True)
@@ -340,7 +386,7 @@ def seg_sr_writer(mask, series_dir, write_dir, json_results):
             family=codes.DCM.ArtificialIntelligence
         )
         
-        seg_name='radiomics'
+        seg_name=remove_non_alphanumeric(selected_roi)
         seg_series_desc='mercure-radiomics_ROI_seg'
         sct_type = codes.SCT.Organ
         # Describe the segment
@@ -357,7 +403,7 @@ def seg_sr_writer(mask, series_dir, write_dir, json_results):
 
         # Create the Segmentation instance
         
-        print(np.shape(mask), len(image_datasets))
+        print(np.shape(mask),mask.dtype, len(image_datasets))
         seg_dataset = hd.seg.Segmentation(
             source_images=image_datasets,
             pixel_array=mask,
@@ -479,6 +525,9 @@ def seg_sr_writer(mask, series_dir, write_dir, json_results):
         #add radiomics from result.json
         sr_file_path = os.path.join(write_dir, "sr_"+seg_name+".dcm")
         sr_dataset.save_as(sr_file_path)
+
+def remove_non_alphanumeric(s):
+    return ''.join([char for char in s if char.isalnum()])
 
 
 if __name__ == "__main__":
