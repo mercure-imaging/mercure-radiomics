@@ -12,10 +12,11 @@ dependencies:
 - six
 - pydicom
 - anaconda::gcc_linux-64
+- pandas
 - pip
 - pip:
-  - numpy
   - mirp
   - highdicom
   - rt-utils
   - pyradiomics
+  - pywavelets
