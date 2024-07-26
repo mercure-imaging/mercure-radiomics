@@ -19,3 +19,4 @@ dependencies:
   - highdicom
   - rt-utils
   - pyradiomics
+  - opencv-python==4.5.5.64
