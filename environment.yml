@@ -6,8 +6,8 @@ channels:
 dependencies:
 - python==3.11
 - numpy==1.24.0
-- SimpleITK
-- PyWavelets
+- simpleitk
+- pywavelets
 - pykwalify
 - six
 - pydicom
@@ -19,4 +19,3 @@ dependencies:
   - highdicom
   - rt-utils
   - pyradiomics
-  - pywavelets

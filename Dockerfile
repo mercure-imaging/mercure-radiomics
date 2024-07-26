@@ -22,6 +22,13 @@ RUN conda env create -f ./environment.yml
 RUN echo "source activate $(head -1 ./environment.yml | cut -d' ' -f2)" > ~/.bashrc
 ENV PATH /opt/conda/envs/$(head -1 ./environment.yml | cut -d' ' -f2)/bin:$PATH
 
+#workaround for issues with numpy v2
+RUN conda uninstall -n $(head -1 ./environment.yml | cut -d' ' -f2) numpy -y
+# Install NumPy version 1.24.0
+RUN conda install -n $(head -1 ./environment.yml | cut -d' ' -f2) numpy=1.24.0 -y
+RUN conda install -n $(head -1 ./environment.yml | cut -d' ' -f2) pywavelets -y
+RUN conda install -n $(head -1 ./environment.yml | cut -d' ' -f2) pandas -y
+
 RUN chmod -R 777 /app
 WORKDIR /app
 

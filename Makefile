@@ -1,2 +1,2 @@
 build:
-	docker build . -t jmsocallaghan/mercure-radiomics:latest
+	docker build . -t mercureimaging/mercure-radiomics:latest
