@@ -2,10 +2,14 @@
 radiomics_process.py
 =============
 Module to run IBSI compliant radiomics feature extraction in mercure.
-
+-User can submit a DICOM image series with accompanying RTSTRUCT or SEG file.
+-Currently MIRP and PYRADIOMICS (default) feature extractors are supported and can be selected.
+-Processing parameters can be passed to the module or default parameters will be used.
+-ROI names can be specified, the module will  output results for all ROIs by default.
+-Output results in .json, .csv, and DICOM SR formats
 """
 
-# Standard Python includes
+# Imports
 import os
 import sys
 import json
@@ -33,18 +37,12 @@ from pydicom.sr.codedict import codes
 from pydicom.uid import generate_uid
 from highdicom.sr.content import FindingSite
 from highdicom.sr.templates import Measurement, TrackingIdentifier
-
-
-# Imports for loading DICOMs
 import pydicom
 
 
 def main(args=sys.argv[1:]):
     """
-    Main entry function of the . 
-    The module is called with two arguments from the function docker-entrypoint.sh:
-    'testmodule [input-folder] [output-folder]'. The exact paths of the input-folder 
-    and output-folder are provided by mercure via environment variables
+    Main function reads inputs, creates directory, calls radiomics processing fucntion and cleans up after.
     """
     # Print some output, so that it can be seen in the logfile that the module was executed
     print(f"Starting mercure-radiomics")
@@ -67,25 +65,19 @@ def main(args=sys.argv[1:]):
     # Get settings for extractor
     default_settings = {"rois": ["ALL"], "processor": "pyradiomics" , "processor_settings":"default", "processing_parameters":{}}
     settings = get_settings(in_folder, default_settings)
-    
-    roi_settings=settings["rois"]
-    
+
     settings_path = os.path.join(current_dir, 'settings')
     if not os.path.exists(settings_path):
         os.makedirs(settings_path) 
-    
-
-    
+     
     # filter image and mask
     [mask_path, image_path, rt_struct_output_path, modality_list] = filter_dicoms(in_folder,current_dir)
    
-    
     mask_file_in = os.path.join(mask_path, os.listdir(mask_path)[0])
     print(mask_file_in)
 
-    
-    [image_volume, mask_volume, selected_roi] = generate_vols(roi_settings, settings, settings_path, image_path, mask_path, mask_file_in, modality_list, out_folder)
-    
+    #perform radiomic feature extraction for all rois
+    process_rois(settings, settings_path, image_path, mask_path, mask_file_in, modality_list, out_folder)
     
     #clean up
     if os.path.exists(mask_path):
@@ -104,8 +96,10 @@ def main(args=sys.argv[1:]):
         shutil.rmtree(settings_path)
         print('settings path deleted.')
 
+
+#function to get mercure settings from task file
 def get_settings(input_folder, settings):
-     # Load the task.json file, which contains the settings for the processing module
+    # Load the task.json file, which contains the settings for the processing module
     try:
         with open(Path(input_folder) / "task.json", "r") as json_file:
             task = json.load(json_file)
@@ -118,6 +112,7 @@ def get_settings(input_folder, settings):
          settings.update(task["process"].get("settings", {}))
     return settings
 
+#function to seperate DICOM series into directories
 def filter_dicoms(in_folder, current_dir):
     mask_path = os.path.join(current_dir, 'mask')
     if not os.path.exists(mask_path):
@@ -149,7 +144,6 @@ def filter_dicoms(in_folder, current_dir):
                 series.append(series_number)
                 if len(series) >2:
                     print("Info: More than two series in input directory.")
-                    #sys.exit(1)
 
             modality = ds.Modality
             if modality=='MR' or  modality=='CT':
@@ -165,16 +159,18 @@ def filter_dicoms(in_folder, current_dir):
             if modality=='SEG':
                 target_path=mask_path
                 if modality not in modality_list: modality_list.append(modality)
-                #image_ds_list.append(ds)
+
             if (target_path):
                 shutil.copy(os.path.join(in_folder, entry.name), target_path)
             else:
                 print("Error: Error copying files for modality:", modality)
-                #sys.exit(1)
+                
     return mask_path, image_path, rt_struct_output_path, modality_list
 
-def generate_vols(roi_settings, settings, settings_path, image_path, mask_path, mask_file_in, modality_list, out_folder):
-
+#loop through rois and perform feature extraction and output results
+def process_rois(settings, settings_path, image_path, mask_path, mask_file_in, modality_list, out_folder):
+    
+    roi_settings=settings["rois"]
     if 'RTSTRUCT' in modality_list: 
         rtstruct = RTStructBuilder.create_from(
             dicom_series_path=image_path, 
@@ -187,83 +183,84 @@ def generate_vols(roi_settings, settings, settings_path, image_path, mask_path, 
         if roi_settings[0]!='ALL':
             roi_list = [item for item in roi_list if item in roi_settings]
         print(roi_list)
+        
         output_df=pd.DataFrame()
         for selected_roi in roi_list:
-            #selected_roi= roi_settings[0]
             print('ROI found, extracting features for ', selected_roi)
-            # Loading the 3D Mask from within the RT Struct ## need to sort out datatype!!!!!
+            # Loading the 3D Mask from within the RT Struct
             mask_volume = np.array(rtstruct.get_roi_mask_by_name(selected_roi))
-            #mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
-
             dcm_images = [image.pixel_array for image in rtstruct.series_data ]
             image_volume = np.stack(dcm_images, axis=2)
-
+            #run feature extraction
             results_dict=extract_radiomic_features(selected_roi,settings, settings_path, image_volume, mask_volume, mask_path,image_path,modality_list, out_folder)
-            
-            # # Initialize out_dict with empty lists
-            # out_dict = {key: [] for key in results_dict}
-            # # Update out_dict (you can call this part multiple times)
-            # for key, value in six.iteritems(results_dict):
-            #     if isinstance(value, list):
-            #         out_dict[key].extend(value)
-            #     else:
-            #         out_dict[key].append(value)
-            
+            #generate results dataframe
             results_df = pd.DataFrame.from_dict(results_dict, orient='index').transpose()
-             #add predictions from current checkpoint to previous runs
             if output_df.empty:
                 output_df = results_df 
             else:
                 output_df = pd.concat([output_df,results_df ], ignore_index=True)
-            
             #write structured report
             json_string = json.dumps(results_dict, indent=4)
             seg_sr_writer(selected_roi, mask_volume, image_path, out_folder, json_string , modality_list)
-        
-
-        
-        
+       
     elif 'SEG' in modality_list:
         seg = hd.seg.segread(mask_file_in)
-        # segment_numbers = seg.get_segment_numbers(
-        #       segmented_property_type=codes.SCT.Organ
-        #    )
-        segment_numbers=roi_settings
+        if roi_settings[0]=='ALL':
+            segment_numbers=list(range(1, seg.number_of_segments + 1))
+        else:
+            segment_numbers=roi_settings
         print(segment_numbers)
         print(seg.number_of_segments )
         if  seg.number_of_segments > 0 :
-            source_image_uids = []
-            for study_uid, series_uid, sop_uid in seg.get_source_image_uids():
-                print(study_uid, series_uid, sop_uid)
-                source_image_uids.append(sop_uid)
-            # Retrieve a binary segmentation mask for these images for the bone segment
-            mask_volume = seg.get_pixels_by_source_instance(
-                    source_sop_instance_uids=source_image_uids,
-                    segment_numbers=segment_numbers,
-            )
-            mask_volume =np.squeeze(mask_volume)
-            #mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
-            image_series_data=[]
-            for root, _, files in os.walk(image_path):
-                for file in files:
-                    try:
-                        ds = pydicom.dcmread(os.path.join(root, file))
-                        if hasattr(ds, "pixel_array"):
-                            image_series_data.append(ds)
-                    except Exception:
-                        # Not a valid DICOM file
-                        continue
-            dcm_images = [image.pixel_array for image in image_series_data ]
-            print (len(dcm_images))
-            image_volume = np.stack(dcm_images, axis=0)
-        else:
-            print('error')
+            output_df=pd.DataFrame()
+            for seg_num in segment_numbers:
+                source_image_uids = []
+                for study_uid, series_uid, sop_uid in seg.get_source_image_uids():
+                    print(study_uid, series_uid, sop_uid)
+                    source_image_uids.append(sop_uid)
+                # Retrieve a binary segmentation mask for these images for the bone segment
+                mask_volume = seg.get_pixels_by_source_instance(
+                        source_sop_instance_uids=source_image_uids,
+                        segment_numbers=[seg_num],
+                )
+                mask_volume =np.squeeze(mask_volume)
+                #mask_array = sitk.GetImageFromArray(mask_volume.astype(np.uint8))
+                image_series_data=[]
+                for root, _, files in os.walk(image_path):
+                    for file in files:
+                        try:
+                            ds = pydicom.dcmread(os.path.join(root, file))
+                            if hasattr(ds, "pixel_array"):
+                                image_series_data.append(ds)
+                        except Exception:
+                            # Not a valid DICOM file
+                            continue
+                dcm_images = [image.pixel_array for image in image_series_data ]
+                print (len(dcm_images))
+                image_volume = np.stack(dcm_images, axis=0)
+
+                #run feature extraction
+                selected_roi = str(seg_num)
+                results_dict=extract_radiomic_features(selected_roi,settings, settings_path, image_volume, mask_volume, mask_path,image_path,modality_list, out_folder)
+                #generate results dataframe
+                results_df = pd.DataFrame.from_dict(results_dict, orient='index').transpose()
+                if output_df.empty:
+                    output_df = results_df 
+                else:
+                    output_df = pd.concat([output_df,results_df ], ignore_index=True)
+                #write structured report
+                json_string = json.dumps(results_dict, indent=4)
+                seg_sr_writer(selected_roi, mask_volume, image_path, out_folder, json_string , modality_list)
+    else:
+        print('Error in roi file.')
+
+    #write results .json and.csv files
     print(output_df)
     output_df.to_csv(os.path.join(out_folder, 'results.csv'), index=False)
     json_file_path = os.path.join(out_folder, 'results.json')
     output_df.to_json(json_file_path, orient='records', indent=4)
-    return image_volume, mask_volume, selected_roi
 
+#perform radiomic feature extraction using selected processor
 def extract_radiomic_features(selected_roi, settings, settings_path, image_volume, mask_volume, mask_path,image_path,modality_list, out_folder):
     selected_processor=settings["processor"]
     processor_settings=settings["processor_settings"]
@@ -302,8 +299,6 @@ def extract_radiomic_features(selected_roi, settings, settings_path, image_volum
             if isinstance(value, np.ndarray):
                 value = value.tolist()
             r_dict[key] =value
-       
-        #json_results= write_result_json(out_folder, r_dict)
 
     elif selected_processor=='mirp':
         #MIRP currently working with RTSTRUCT - could convert SEG to RTSTRUCT?
@@ -346,38 +341,17 @@ def extract_radiomic_features(selected_roi, settings, settings_path, image_volum
         #json_results = write_result_json(out_folder, r_dict)
     return r_dict
 
-def write_result_json(output_dir, results_dict):
-    if Path(output_dir).exists():
-        results_file = os.path.join(output_dir,"results.json")
-        with open(results_file, "w") as write_file:
-            json_string = json.dumps(results_dict, indent=4)
-            write_file.write(json_string)
-        p = Path(results_file)
-        p.chmod(p.stat().st_mode | stat.S_IROTH | stat.S_IXOTH | stat.S_IWOTH)
 
-        # Write the dictionary to a CSV file
-        results_csv = os.path.join(output_dir,'radiomics_results.csv')
-        with open(results_csv, 'w', newline='') as file:
-            writer = csv.DictWriter(file, fieldnames=results_dict.keys())
-            writer.writeheader()
-            writer.writerow(results_dict)
-    
-    return json_string
-
+# DICOM structured report output
 def seg_sr_writer(selected_roi, mask, series_dir, write_dir, json_results, modality_list):
         # reshape array if RT struct   
         if 'RTSTRUCT' in modality_list:
             mask=np.flip(np.moveaxis(mask,2,0),0)
 
         series_dir = Path(series_dir)
-
         image_files = sorted(series_dir.glob("*.dcm"), reverse=True)
-
-        # Read CT Image data sets from PS3.10 files on disk
         image_datasets = [pydicom.dcmread(str(f)) for f in image_files]
         print('got past dcm_read')
-        # Read CT Image data sets from PS3.10 files on disk
-        
         
         # Describe the algorithm that created the segmentation
         algorithm_identification = hd.AlgorithmIdentificationSequence(
@@ -402,7 +376,6 @@ def seg_sr_writer(selected_roi, mask, series_dir, write_dir, json_results, modal
         )
 
         # Create the Segmentation instance
-        
         print(np.shape(mask),mask.dtype, len(image_datasets))
         seg_dataset = hd.seg.Segmentation(
             source_images=image_datasets,
@@ -420,28 +393,12 @@ def seg_sr_writer(selected_roi, mask, series_dir, write_dir, json_results, modal
             series_description=seg_series_desc,
         )
         
-        #print(seg_dataset)
         seg_file_path = os.path.join(write_dir, "seg_"+seg_name+".dcm")
         seg_dataset.save_as(seg_file_path)
 
 
         #write structured report:
-
-        #TODO write IBSI measurment definitions and loop:
-        # A measurement using an IBSI code (not in pydicom)
-        # histogram_intensity_code = hd.sr.CodedConcept(
-        #     value="X6K6",
-        #     meaning="Intensity Histogram Mean",
-        #     scheme_designator="IBSI",
-        # )
-        # hist_measurement = hd.sr.Measurement(
-        #     name=histogram_intensity_code,
-        #     value=-119.0738525390625,
-        #     unit=codes.UCUM.HounsfieldUnit,
-        # )
-
-        # A segmentation dataset, assumed to contain a segmentation of the source
-        # image above
+        # A segmentation dataset, assumed to contain a segmentation of the source image
         seg = dcmread(seg_file_path)
 
         # Information about the observer
@@ -464,8 +421,6 @@ def seg_sr_writer(selected_roi, mask, series_dir, write_dir, json_results, modal
             observer_device_context=observer_device_context,
         )
 
-        
-        
         # A tracking identifier for this measurement group
         tracking_id = hd.sr.TrackingIdentifier(
         identifier='Region3D0001',
@@ -482,8 +437,6 @@ def seg_sr_writer(selected_roi, mask, series_dir, write_dir, json_results, modal
         group = hd.sr.VolumetricROIMeasurementsAndQualitativeEvaluations(
         referenced_segment=ref_segment,
         tracking_identifier=tracking_id,
-        #measurements=[...],
-        #qualitative_evaluations=[...],
         )
         
         radiomics_text_concept = hd.sr.CodedConcept(
@@ -521,11 +474,11 @@ def seg_sr_writer(selected_roi, mask, series_dir, write_dir, json_results, modal
             manufacturer='Manufacturer'
         )
         
-
         #add radiomics from result.json
         sr_file_path = os.path.join(write_dir, "sr_"+seg_name+".dcm")
         sr_dataset.save_as(sr_file_path)
 
+# remove non alphanumeric characters in roi names to prevent issues with output file names
 def remove_non_alphanumeric(s):
     return ''.join([char for char in s if char.isalnum()])
 
