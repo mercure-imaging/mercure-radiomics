@@ -57,13 +57,13 @@ def create_dicom_file(pixel_array, output_path, study_instance_uid, series_insta
         s_num = 4
 
     #set metadata values
-    ds.StudyDate = '20230101'
+    ds.StudyDate = '2023010' + str(s_num)
     ds.PatientBirthDate='20230101'
     ds.PatientSex='O'
     ds.AccessionNumber=patient_ID
     ds.StudyTime = '010101'
     ds.SeriesDescription = s_desc
-    ds.StudyID = '00000000'
+    ds.StudyID = '1000000' + str(s_num)
     # Add the data elements
     ds.PatientName = "Mercure^Dicom"
     ds.PatientID = patient_ID 
@@ -116,8 +116,7 @@ def nifti_to_dicom(input_dir, output_dir, segmentation_dir):
         print(f"No NIfTI files found in {input_dir}")
         return
 
-    # Generate study information
-    study_instance_uid = generate_uid()
+    
 
     # Dictionary to store segmentation data
     segmentations = {}
@@ -146,6 +145,8 @@ def nifti_to_dicom(input_dir, output_dir, segmentation_dir):
         nifti_data = np.rot90(nifti_data, 1, (0, 1))  # rotate segmentation in-plane
         # Generate series information
         series_instance_uid = generate_uid()
+        # Generate study information - one for each series for ease of use with mercure
+        study_instance_uid = generate_uid()
         f_uid = generate_uid()
         print('nifti shape=', nifti_data.shape)
         # Iterate through slices
