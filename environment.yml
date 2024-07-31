@@ -13,6 +13,7 @@ dependencies:
 - pydicom
 - anaconda::gcc_linux-64
 - pandas
+- nibabel
 - pip
 - pip:
   - mirp
