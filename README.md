@@ -5,6 +5,7 @@ Mercure module to run [IBSI](https://theibsi.github.io/) compliant radiomics fea
 
 Current radiomics processing packages included in the module are [Pyradiomics](https://github.com/AIM-Harvard/pyradiomics) and [MIRP](https://github.com/oncoray/mirp).This module runs as a docker container in mercure, it can be added to an existing mercure installation using docker tag : *mercureimaging/mercure-radiomics*. The module will perform radiomic feature extraction for DICOM image series sent to mercure with accompanying ROIs in DICOM RTSTRUCT or SEG format.
 
+Radiomic feature measures are provided in .csv format, .json results that can be retrieved from the mercure database and also DICOM Structured Reports for onward transfer and analysis.
 <br>
 
 ## **Installation**
