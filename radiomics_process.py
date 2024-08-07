@@ -256,9 +256,16 @@ def process_rois(settings, settings_path, image_path, mask_path, mask_file_in, m
 
     #write results .json and.csv files
     print(output_df)
-    output_df.to_csv(os.path.join(out_folder, 'results.csv'), index=False)
-    json_file_path = os.path.join(out_folder, 'results.json')
-    output_df.to_json(json_file_path, orient='records', indent=4)
+    output_df.to_csv(os.path.join(out_folder, 'result.csv'), index=False)
+    json_file_path = os.path.join(out_folder, 'result.json')
+    #output_df.to_json(json_file_path, orient='records', indent=4)
+
+    #Convert DataFrame to a dictionary
+    data_dict = output_df.to_dict(orient='index')
+
+    # Write the dictionary to a JSON file
+    with open(json_file_path, 'w') as json_file:
+        json.dump(data_dict, json_file, indent=4)
 
 #perform radiomic feature extraction using selected processor
 def extract_radiomic_features(selected_roi, settings, settings_path, image_volume, mask_volume, mask_path,image_path,modality_list, out_folder):
